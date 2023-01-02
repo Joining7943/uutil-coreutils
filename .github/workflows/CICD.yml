@@ -607,8 +607,8 @@ jobs:
           printf "[build.env]\npassthrough = [\"CI\", \"RUST_BACKTRACE\"]\n" > Cross.toml
         fi
         # * test only library and/or binaries for arm-type targets
-        unset CARGO_TEST_OPTIONS ; case '${{ matrix.job.target }}' in aarch64-* | arm-*) CARGO_TEST_OPTIONS="--bins" ;; esac;
-        outputs CARGO_TEST_OPTIONS
+        # unset CARGO_TEST_OPTIONS ; case '${{ matrix.job.target }}' in aarch64-* | arm-*) CARGO_TEST_OPTIONS="--bins" ;; esac;
+        # outputs CARGO_TEST_OPTIONS
         # * executable for `strip`?
         STRIP="strip"
         case ${{ matrix.job.target }} in
