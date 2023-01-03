@@ -2963,10 +2963,7 @@ fn test_pipe_when_lines_option_given_input_size_is_one_byte_greater_than_buffer_
         .stdout_only(expected);
 }
 
-// FIXME: windows: this test failed with timeout in the CI. Running this test in
-// a Windows VirtualBox image produces no errors.
 #[test]
-#[cfg(not(target_os = "windows"))]
 fn test_pipe_when_lines_option_given_input_size_has_multiple_size_of_buffer_size() {
     let total_lines = 100;
     let random_string = RandomString::generate_with_delimiter(
@@ -3270,10 +3267,7 @@ fn test_pipe_when_bytes_option_given_input_size_is_one_byte_greater_than_buffer_
         .stdout_only(random_string);
 }
 
-// FIXME: windows: this test failed with timeout in the CI. Running this test in
-// a Windows VirtualBox image produces no errors.
 #[test]
-#[cfg(not(target_os = "windows"))]
 fn test_pipe_when_bytes_option_given_input_size_has_multiple_size_of_buffer_size() {
     let random_string = RandomString::generate(AlphanumericNewline, CHUNK_BUFFER_SIZE * 3);
     let random_string = random_string.as_str();
@@ -3388,7 +3382,7 @@ fn test_seek_bytes_forward_outside_file() {
 // Some basic tests for ---presume-input-pipe. These tests build upon the
 // debug_assert in bounded tail to detect that we're using the bounded_tail in
 // case the option is given on command line.
-#[cfg(all(not(target_os = "android"), not(target_os = "windows")))] // FIXME:
+#[cfg(all(not(target_os = "android")))] // FIXME:
 #[test]
 fn test_args_when_presume_input_pipe_given_input_is_pipe() {
     let random_string = RandomString::generate(AlphanumericNewline, 1000);
