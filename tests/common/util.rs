@@ -3,7 +3,7 @@
 //  * For the full copyright and license information, please view the LICENSE
 //  * file that was distributed with this source code.
 
-//spell-checker: ignore (linux) rlimit prlimit coreutil ggroups uchild uncaptured scmd
+//spell-checker: ignore (linux) rlimit prlimit coreutil ggroups uchild uncaptured scmd SHLVL
 
 #![allow(dead_code)]
 
@@ -1191,18 +1191,12 @@ impl UCommand {
         curdir: U,
         env_clear: bool,
     ) -> Self {
-        let args: Vec<OsString> = if let Some(util_name) = util_name.as_ref() {
-            vec![util_name.into()]
-        } else {
-            vec![]
-        };
-
-        let ucmd = Self {
+        Self {
             tmpd: None,
             has_run: false,
             bin_path: bin_path.as_ref().into(),
             current_dir: curdir.as_ref().into(),
-            args,
+            args: vec![],
             env_clear,
             env_vars: vec![],
             util_name: util_name.map(|s| s.as_ref().into()),
@@ -1216,9 +1210,7 @@ impl UCommand {
             limits: vec![],
             stderr_to_stdout: false,
             timeout: Some(Duration::from_secs(30)),
-        };
-
-        ucmd
+        }
     }
 
     pub fn new_from_tmp<T: AsRef<OsStr>, S: AsRef<OsStr>>(
@@ -1230,6 +1222,29 @@ impl UCommand {
         let mut ucmd: Self = Self::new(bin_path, util_name, tmpd.path(), env_clear);
         ucmd.tmpd = Some(tmpd);
         ucmd
+    }
+
+    /// Run a command in a `sh` (unix) or `cmd` (windows) shell.
+    ///
+    /// The arguments, set with [`UCommand:arg`] or [`UCommand:args`] are interpreted as arguments
+    /// for the shell. The last argument should be a positional argument with the command to run in
+    /// the shell.
+    ///
+    /// This option replaces `self.bin_path` with `sh` (or `cmd`) and sets `self.util_name` to
+    /// `None`.
+    pub fn use_shell(&mut self) -> &mut Self {
+        self.util_name = None;
+
+        #[cfg(unix)]
+        let (bin_path, arg) = (OsString::from("sh"), OsString::from("-c"));
+        #[cfg(windows)]
+        let (bin_path, arg) = (OsString::from("cmd"), OsString::from("/C"));
+
+        self.bin_path = bin_path;
+        if !self.args.contains(&arg) {
+            self.args.insert(0, arg);
+        }
+        self
     }
 
     pub fn current_dir<T>(&mut self, current_dir: T) -> &mut Self
@@ -1337,8 +1352,12 @@ impl UCommand {
     // TODO: make public?
     fn build(&mut self) -> (Command, Option<CapturedOutput>, Option<CapturedOutput>) {
         let mut command = Command::new(&self.bin_path);
-        command.current_dir(&self.current_dir);
+        if let Some(util_name) = &self.util_name {
+            command.arg(util_name);
+        }
+
         command.args(&self.args);
+        command.current_dir(&self.current_dir);
 
         if self.env_clear {
             command.env_clear();
@@ -3223,5 +3242,28 @@ mod tests {
     fn test_ucommand_when_run_with_timeout_higher_then_execution_time_then_no_panic() {
         let ts = TestScenario::new("sleep");
         ts.ucmd().timeout(Duration::from_secs(60)).arg("1.0").run();
+    }
+
+    #[cfg(feature = "echo")]
+    #[test]
+    fn test_ucommand_when_use_shell() {
+        let test_binary = env!("CARGO_BIN_EXE_coreutils");
+        let tmpdir = tempfile::tempdir().unwrap();
+        let shell_cmd = format!("{} echo -n hello", test_binary);
+
+        let mut command = UCommand::new(test_binary, Some("echo"), tmpdir.path(), true);
+        command.arg(&shell_cmd).use_shell();
+
+        #[cfg(unix)]
+        let (expected_bin, expected_arg) = (OsString::from("sh"), OsString::from("-c"));
+        #[cfg(windows)]
+        let (expected_bin, expected_arg) = (OsString::from("cmd"), OsString::from("/C"));
+
+        std::assert_eq!(expected_bin, command.bin_path);
+        assert!(command.util_name.is_none());
+        std::assert_eq!(command.args, &[expected_arg, OsString::from(&shell_cmd)]);
+        assert!(command.tmpd.is_none());
+
+        command.succeeds().stdout_is("hello");
     }
 }
