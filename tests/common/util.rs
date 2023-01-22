@@ -1263,7 +1263,6 @@ impl UCommand {
     /// Add a parameter to the invocation. Path arguments are treated relative
     /// to the test environment directory.
     pub fn arg<S: AsRef<OsStr>>(&mut self, arg: S) -> &mut Self {
-        assert!(!self.has_run, "{}", ALREADY_RUN);
         self.args.push(arg.as_ref().into());
         self
     }
@@ -1271,7 +1270,6 @@ impl UCommand {
     /// Add multiple parameters to the invocation. Path arguments are treated relative
     /// to the test environment directory.
     pub fn args<S: AsRef<OsStr>>(&mut self, args: &[S]) -> &mut Self {
-        assert!(!self.has_run, "{}", MULTIPLE_STDIN_MEANINGLESS);
         self.args.extend(args.iter().map(|s| s.as_ref().into()));
         self
     }
@@ -1307,7 +1305,6 @@ impl UCommand {
         K: AsRef<OsStr>,
         V: AsRef<OsStr>,
     {
-        assert!(!self.has_run, "{}", ALREADY_RUN);
         self.env_vars
             .push((key.as_ref().into(), val.as_ref().into()));
         self
@@ -1337,6 +1334,7 @@ impl UCommand {
         self
     }
 
+    // TODO: make public?
     fn build(&mut self) -> (Command, Option<CapturedOutput>, Option<CapturedOutput>) {
         let mut command = Command::new(&self.bin_path);
         command.current_dir(&self.current_dir);
@@ -1406,6 +1404,7 @@ impl UCommand {
     /// Spawns the command, feeds the stdin if any, and returns the
     /// child process immediately.
     pub fn run_no_wait(&mut self) -> UChild {
+        // TODO: remove?
         assert!(!self.has_run, "{}", ALREADY_RUN);
         self.has_run = true;
 
