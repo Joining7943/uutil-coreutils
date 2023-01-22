@@ -1337,20 +1337,13 @@ impl UCommand {
         self
     }
 
-    /// Spawns the command, feeds the stdin if any, and returns the
-    /// child process immediately.
-    pub fn run_no_wait(&mut self) -> UChild {
-        assert!(!self.has_run, "{}", ALREADY_RUN);
-        self.has_run = true;
-
-        log_info("run", self.to_string());
-
-        let mut raw = Command::new(&self.bin_path);
-        raw.current_dir(&self.current_dir);
-        raw.args(&self.args);
+    fn build(&mut self) -> (Command, Option<CapturedOutput>, Option<CapturedOutput>) {
+        let mut command = Command::new(&self.bin_path);
+        command.current_dir(&self.current_dir);
+        command.args(&self.args);
 
         if self.env_clear {
-            raw.env_clear();
+            command.env_clear();
             if cfg!(windows) {
                 // spell-checker:ignore (dll) rsaenh
                 // %SYSTEMROOT% is required on Windows to initialize crypto provider
@@ -1358,32 +1351,30 @@ impl UCommand {
                 // From `procmon`: RegQueryValue HKLM\SOFTWARE\Microsoft\Cryptography\Defaults\Provider\Microsoft Strong Cryptographic Provider\Image Path
                 // SUCCESS  Type: REG_SZ, Length: 66, Data: %SystemRoot%\system32\rsaenh.dll"
                 if let Some(systemroot) = env::var_os("SYSTEMROOT") {
-                    raw.env("SYSTEMROOT", systemroot);
+                    command.env("SYSTEMROOT", systemroot);
                 }
             } else {
                 // if someone is setting LD_PRELOAD, there's probably a good reason for it
                 if let Some(ld_preload) = env::var_os("LD_PRELOAD") {
-                    raw.env("LD_PRELOAD", ld_preload);
+                    command.env("LD_PRELOAD", ld_preload);
                 }
             }
         }
 
         for (key, value) in &self.env_vars {
-            raw.env(key, value);
+            command.env(key, value);
         }
 
         let mut captured_stdout = None;
         let mut captured_stderr = None;
-        let command = if self.stderr_to_stdout {
+        if self.stderr_to_stdout {
             let mut output = CapturedOutput::default();
 
-            let command = raw
+            command
                 .stdin(self.stdin.take().unwrap_or_else(Stdio::null))
                 .stdout(Stdio::from(output.try_clone().unwrap()))
                 .stderr(Stdio::from(output.try_clone().unwrap()));
             captured_stdout = Some(output);
-
-            command
         } else {
             let stdout = if self.stdout.is_some() {
                 self.stdout.take().unwrap()
@@ -1403,11 +1394,24 @@ impl UCommand {
                 stdio
             };
 
-            raw.stdin(self.stdin.take().unwrap_or_else(Stdio::null))
+            command
+                .stdin(self.stdin.take().unwrap_or_else(Stdio::null))
                 .stdout(stdout)
-                .stderr(stderr)
+                .stderr(stderr);
         };
 
+        (command, captured_stdout, captured_stderr)
+    }
+
+    /// Spawns the command, feeds the stdin if any, and returns the
+    /// child process immediately.
+    pub fn run_no_wait(&mut self) -> UChild {
+        assert!(!self.has_run, "{}", ALREADY_RUN);
+        self.has_run = true;
+
+        log_info("run", self.to_string());
+
+        let (mut command, captured_stdout, captured_stderr) = self.build();
         let child = command.spawn().unwrap();
 
         #[cfg(target_os = "linux")]
