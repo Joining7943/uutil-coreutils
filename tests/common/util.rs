@@ -15,7 +15,7 @@ use rstest::rstest;
 use std::borrow::Cow;
 #[cfg(not(windows))]
 use std::ffi::CString;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs::{self, hard_link, remove_file, File, OpenOptions};
 use std::io::{self, BufWriter, Read, Result, Write};
 #[cfg(unix)]
@@ -34,7 +34,6 @@ use std::thread::{sleep, JoinHandle};
 use std::time::{Duration, Instant};
 use std::{env, hint, thread};
 use tempfile::{Builder, TempDir};
-use uucore::Args;
 
 static TESTS_DIR: &str = "tests";
 static FIXTURES_DIR: &str = "fixtures";
@@ -1166,7 +1165,7 @@ impl TestScenario {
 #[derive(Debug)]
 pub struct UCommand {
     pub raw: Command,
-    comm_string: String,
+    args: Vec<OsString>,
     bin_path: String,
     util_name: Option<String>,
     has_run: bool,
@@ -1191,8 +1190,13 @@ impl UCommand {
     ) -> Self {
         let bin_path = bin_path.as_ref();
         let util_name = util_name.as_ref().map(std::convert::AsRef::as_ref);
+        let args: Vec<OsString> = if let Some(util_name) = util_name {
+            vec![util_name.into()]
+        } else {
+            vec![]
+        };
 
-        let mut ucmd = Self {
+        let ucmd = Self {
             tmpd: None,
             has_run: false,
             raw: {
@@ -1218,8 +1222,8 @@ impl UCommand {
                 }
                 cmd
             },
-            comm_string: String::from(bin_path.to_str().unwrap()),
             bin_path: bin_path.to_str().unwrap().to_string(),
+            args,
             util_name: util_name.map(|un| un.to_str().unwrap().to_string()),
             ignore_stdin_write_error: false,
             bytes_into_stdin: None,
@@ -1231,10 +1235,6 @@ impl UCommand {
             stderr_to_stdout: false,
             timeout: Some(Duration::from_secs(30)),
         };
-
-        if let Some(un) = util_name {
-            ucmd.arg(un);
-        }
 
         ucmd
     }
@@ -1275,10 +1275,7 @@ impl UCommand {
     /// to the test environment directory.
     pub fn arg<S: AsRef<OsStr>>(&mut self, arg: S) -> &mut Self {
         assert!(!self.has_run, "{}", ALREADY_RUN);
-        self.comm_string.push(' ');
-        self.comm_string
-            .push_str(arg.as_ref().to_str().unwrap_or_default());
-        self.raw.arg(arg.as_ref());
+        self.args.push(arg.as_ref().into());
         self
     }
 
@@ -1286,17 +1283,7 @@ impl UCommand {
     /// to the test environment directory.
     pub fn args<S: AsRef<OsStr>>(&mut self, args: &[S]) -> &mut Self {
         assert!(!self.has_run, "{}", MULTIPLE_STDIN_MEANINGLESS);
-        let strings = args
-            .iter()
-            .map(|s| s.as_ref().to_os_string())
-            .collect_ignore();
-
-        for s in strings {
-            self.comm_string.push(' ');
-            self.comm_string.push_str(&s);
-        }
-
-        self.raw.args(args.as_ref());
+        self.args.extend(args.iter().map(|s| s.as_ref().into()));
         self
     }
 
@@ -1364,7 +1351,12 @@ impl UCommand {
     pub fn run_no_wait(&mut self) -> UChild {
         assert!(!self.has_run, "{}", ALREADY_RUN);
         self.has_run = true;
-        log_info("run", &self.comm_string);
+
+        let mut comm_string = vec![self.bin_path.clone()];
+        comm_string.extend(self.args.iter().map(|s| s.to_string_lossy().to_string()));
+        log_info("run", comm_string.join(" "));
+
+        self.raw.args(&self.args);
 
         let mut captured_stdout = None;
         let mut captured_stderr = None;
