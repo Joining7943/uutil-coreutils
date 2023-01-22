@@ -1164,11 +1164,11 @@ impl TestScenario {
 /// 3. it provides convenience construction arguments to set the Command working directory and/or clear its environment.
 #[derive(Debug)]
 pub struct UCommand {
-    pub raw: Command,
     args: Vec<OsString>,
-    env_clear: bool,
     env_vars: Vec<(OsString, OsString)>,
-    bin_path: String,
+    current_dir: OsString,
+    env_clear: bool,
+    bin_path: OsString,
     util_name: Option<String>,
     has_run: bool,
     ignore_stdin_write_error: bool,
@@ -1201,12 +1201,8 @@ impl UCommand {
         let ucmd = Self {
             tmpd: None,
             has_run: false,
-            raw: {
-                let mut cmd = Command::new(bin_path);
-                cmd.current_dir(curdir.as_ref());
-                cmd
-            },
-            bin_path: bin_path.to_str().unwrap().to_string(),
+            bin_path: bin_path.into(),
+            current_dir: curdir.as_ref().into(),
             args,
             env_clear,
             env_vars: vec![],
@@ -1235,6 +1231,14 @@ impl UCommand {
         let mut ucmd: Self = Self::new(bin_path, util_name, tmpd_path_buf, env_clear);
         ucmd.tmpd = Some(tmpd);
         ucmd
+    }
+
+    pub fn current_dir<T>(&mut self, current_dir: T) -> &mut Self
+    where
+        T: AsRef<OsStr>,
+    {
+        self.current_dir = current_dir.as_ref().into();
+        self
     }
 
     pub fn set_stdin<T: Into<Stdio>>(&mut self, stdin: T) -> &mut Self {
@@ -1339,14 +1343,14 @@ impl UCommand {
         assert!(!self.has_run, "{}", ALREADY_RUN);
         self.has_run = true;
 
-        let mut comm_string = vec![self.bin_path.clone()];
-        comm_string.extend(self.args.iter().map(|s| s.to_string_lossy().to_string()));
-        log_info("run", comm_string.join(" "));
+        log_info("run", self.to_string());
 
-        self.raw.args(&self.args);
+        let mut raw = Command::new(&self.bin_path);
+        raw.current_dir(&self.current_dir);
+        raw.args(&self.args);
 
         if self.env_clear {
-            self.raw.env_clear();
+            raw.env_clear();
             if cfg!(windows) {
                 // spell-checker:ignore (dll) rsaenh
                 // %SYSTEMROOT% is required on Windows to initialize crypto provider
@@ -1354,18 +1358,18 @@ impl UCommand {
                 // From `procmon`: RegQueryValue HKLM\SOFTWARE\Microsoft\Cryptography\Defaults\Provider\Microsoft Strong Cryptographic Provider\Image Path
                 // SUCCESS  Type: REG_SZ, Length: 66, Data: %SystemRoot%\system32\rsaenh.dll"
                 if let Some(systemroot) = env::var_os("SYSTEMROOT") {
-                    self.raw.env("SYSTEMROOT", systemroot);
+                    raw.env("SYSTEMROOT", systemroot);
                 }
             } else {
                 // if someone is setting LD_PRELOAD, there's probably a good reason for it
                 if let Some(ld_preload) = env::var_os("LD_PRELOAD") {
-                    self.raw.env("LD_PRELOAD", ld_preload);
+                    raw.env("LD_PRELOAD", ld_preload);
                 }
             }
         }
 
         for (key, value) in &self.env_vars {
-            self.raw.env(key, value);
+            raw.env(key, value);
         }
 
         let mut captured_stdout = None;
@@ -1373,8 +1377,7 @@ impl UCommand {
         let command = if self.stderr_to_stdout {
             let mut output = CapturedOutput::default();
 
-            let command = self
-                .raw
+            let command = raw
                 .stdin(self.stdin.take().unwrap_or_else(Stdio::null))
                 .stdout(Stdio::from(output.try_clone().unwrap()))
                 .stderr(Stdio::from(output.try_clone().unwrap()));
@@ -1400,8 +1403,7 @@ impl UCommand {
                 stdio
             };
 
-            self.raw
-                .stdin(self.stdin.take().unwrap_or_else(Stdio::null))
+            raw.stdin(self.stdin.take().unwrap_or_else(Stdio::null))
                 .stdout(stdout)
                 .stderr(stderr)
         };
@@ -1464,6 +1466,14 @@ impl UCommand {
     pub fn get_full_fixture_path(&self, file_rel_path: &str) -> String {
         let tmpdir_path = self.tmpd.as_ref().unwrap().path();
         format!("{}/{file_rel_path}", tmpdir_path.to_str().unwrap())
+    }
+}
+
+impl std::fmt::Display for UCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut comm_string: Vec<String> = vec![self.bin_path.to_string_lossy().to_string()];
+        comm_string.extend(self.args.iter().map(|s| s.to_string_lossy().to_string()));
+        f.write_str(&comm_string.join(" "))
     }
 }
 
@@ -1706,7 +1716,7 @@ impl UChild {
     ) -> Self {
         Self {
             raw: child,
-            bin_path: ucommand.bin_path.clone(),
+            bin_path: ucommand.bin_path.to_string_lossy().to_string(),
             util_name: ucommand.util_name.clone(),
             captured_stdout,
             captured_stderr,
