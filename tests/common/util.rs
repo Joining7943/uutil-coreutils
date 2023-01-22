@@ -1166,6 +1166,8 @@ impl TestScenario {
 pub struct UCommand {
     pub raw: Command,
     args: Vec<OsString>,
+    env_clear: bool,
+    env_vars: Vec<(OsString, OsString)>,
     bin_path: String,
     util_name: Option<String>,
     has_run: bool,
@@ -1202,28 +1204,12 @@ impl UCommand {
             raw: {
                 let mut cmd = Command::new(bin_path);
                 cmd.current_dir(curdir.as_ref());
-                if env_clear {
-                    cmd.env_clear();
-                    if cfg!(windows) {
-                        // spell-checker:ignore (dll) rsaenh
-                        // %SYSTEMROOT% is required on Windows to initialize crypto provider
-                        // ... and crypto provider is required for std::rand
-                        // From `procmon`: RegQueryValue HKLM\SOFTWARE\Microsoft\Cryptography\Defaults\Provider\Microsoft Strong Cryptographic Provider\Image Path
-                        // SUCCESS  Type: REG_SZ, Length: 66, Data: %SystemRoot%\system32\rsaenh.dll"
-                        if let Some(systemroot) = env::var_os("SYSTEMROOT") {
-                            cmd.env("SYSTEMROOT", systemroot);
-                        }
-                    } else {
-                        // if someone is setting LD_PRELOAD, there's probably a good reason for it
-                        if let Some(ld_preload) = env::var_os("LD_PRELOAD") {
-                            cmd.env("LD_PRELOAD", ld_preload);
-                        }
-                    }
-                }
                 cmd
             },
             bin_path: bin_path.to_str().unwrap().to_string(),
             args,
+            env_clear,
+            env_vars: vec![],
             util_name: util_name.map(|un| un.to_str().unwrap().to_string()),
             ignore_stdin_write_error: false,
             bytes_into_stdin: None,
@@ -1319,7 +1305,8 @@ impl UCommand {
         V: AsRef<OsStr>,
     {
         assert!(!self.has_run, "{}", ALREADY_RUN);
-        self.raw.env(key, val);
+        self.env_vars
+            .push((key.as_ref().into(), val.as_ref().into()));
         self
     }
 
@@ -1357,6 +1344,29 @@ impl UCommand {
         log_info("run", comm_string.join(" "));
 
         self.raw.args(&self.args);
+
+        if self.env_clear {
+            self.raw.env_clear();
+            if cfg!(windows) {
+                // spell-checker:ignore (dll) rsaenh
+                // %SYSTEMROOT% is required on Windows to initialize crypto provider
+                // ... and crypto provider is required for std::rand
+                // From `procmon`: RegQueryValue HKLM\SOFTWARE\Microsoft\Cryptography\Defaults\Provider\Microsoft Strong Cryptographic Provider\Image Path
+                // SUCCESS  Type: REG_SZ, Length: 66, Data: %SystemRoot%\system32\rsaenh.dll"
+                if let Some(systemroot) = env::var_os("SYSTEMROOT") {
+                    self.raw.env("SYSTEMROOT", systemroot);
+                }
+            } else {
+                // if someone is setting LD_PRELOAD, there's probably a good reason for it
+                if let Some(ld_preload) = env::var_os("LD_PRELOAD") {
+                    self.raw.env("LD_PRELOAD", ld_preload);
+                }
+            }
+        }
+
+        for (key, value) in &self.env_vars {
+            self.raw.env(key, value);
+        }
 
         let mut captured_stdout = None;
         let mut captured_stderr = None;
