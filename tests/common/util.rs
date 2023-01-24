@@ -45,6 +45,8 @@ static MULTIPLE_STDIN_MEANINGLESS: &str = "Ucommand is designed around a typical
 
 static NO_STDIN_MEANINGLESS: &str = "Setting this flag has no effect if there is no stdin";
 
+pub const TESTS_BINARY: &str = env!("CARGO_BIN_EXE_coreutils");
+
 /// Test if the program is running under CI
 pub fn is_ci() -> bool {
     std::env::var("CI")
@@ -1095,7 +1097,7 @@ impl TestScenario {
     pub fn new(util_name: &str) -> Self {
         let tmpd = Rc::new(TempDir::new().unwrap());
         let ts = Self {
-            bin_path: PathBuf::from(env!("CARGO_BIN_EXE_coreutils")),
+            bin_path: PathBuf::from(TESTS_BINARY),
             util_name: String::from(util_name),
             fixtures: AtPath::new(tmpd.as_ref().path()),
             tmpd,
@@ -3242,11 +3244,10 @@ mod tests {
     #[cfg(feature = "echo")]
     #[test]
     fn test_ucommand_when_use_shell() {
-        let test_binary = env!("CARGO_BIN_EXE_coreutils");
         let tmpdir = tempfile::tempdir().unwrap();
-        let shell_cmd = format!("{} echo -n hello", test_binary);
+        let shell_cmd = format!("{} echo -n hello", TESTS_BINARY);
 
-        let mut command = UCommand::new(test_binary, Some("echo"), tmpdir.path(), true);
+        let mut command = UCommand::new(TESTS_BINARY, Some("echo"), tmpdir.path(), true);
         command.arg(&shell_cmd).use_shell();
 
         #[cfg(unix)]
