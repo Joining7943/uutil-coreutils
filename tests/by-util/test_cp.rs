@@ -2529,9 +2529,9 @@ fn test_src_base_dot() {
     let at = ts.fixtures.clone();
     at.mkdir("x");
     at.mkdir("y");
-    let mut ucmd = UCommand::new(ts.bin_path, Some(ts.util_name), at.plus("y"), true);
-
-    ucmd.args(&["--verbose", "-r", "../x/.", "."])
+    ts.ucmd()
+        .current_dir(at.plus("y"))
+        .args(&["--verbose", "-r", "../x/.", "."])
         .succeeds()
         .no_stderr()
         .no_stdout();
