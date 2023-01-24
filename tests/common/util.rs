@@ -1176,8 +1176,7 @@ pub struct UCommand {
     stdout: Option<Stdio>,
     stderr: Option<Stdio>,
     bytes_into_stdin: Option<Vec<u8>>,
-    // TODO: Why android?
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(any(target_os = "linux"))]
     limits: Vec<(rlimit::Resource, u64, u64)>,
     stderr_to_stdout: bool,
     timeout: Option<Duration>,
@@ -1205,8 +1204,7 @@ impl UCommand {
             stdin: None,
             stdout: None,
             stderr: None,
-            // TODO: Why android?
-            #[cfg(any(target_os = "linux", target_os = "android"))]
+            #[cfg(any(target_os = "linux"))]
             limits: vec![],
             stderr_to_stdout: false,
             timeout: Some(Duration::from_secs(30)),
@@ -1325,8 +1323,7 @@ impl UCommand {
         self
     }
 
-    // TODO: Why android?
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(any(target_os = "linux"))]
     pub fn with_limit(
         &mut self,
         resource: rlimit::Resource,
@@ -1349,7 +1346,6 @@ impl UCommand {
         self
     }
 
-    // TODO: make public?
     fn build(&mut self) -> (Command, Option<CapturedOutput>, Option<CapturedOutput>) {
         let mut command = Command::new(&self.bin_path);
         if let Some(util_name) = &self.util_name {
@@ -1423,7 +1419,6 @@ impl UCommand {
     /// Spawns the command, feeds the stdin if any, and returns the
     /// child process immediately.
     pub fn run_no_wait(&mut self) -> UChild {
-        // TODO: remove?
         assert!(!self.has_run, "{}", ALREADY_RUN);
         self.has_run = true;
 
