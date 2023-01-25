@@ -3,7 +3,7 @@
 //  * For the full copyright and license information, please view the LICENSE
 //  * file that was distributed with this source code.
 
-//spell-checker: ignore (linux) rlimit prlimit coreutil ggroups uchild uncaptured scmd SHLVL
+//spell-checker: ignore (linux) rlimit prlimit coreutil ggroups uchild uncaptured scmd SHLVL canonicalized
 
 #![allow(dead_code)]
 
@@ -13,6 +13,7 @@ use rlimit::prlimit;
 use rstest::rstest;
 #[cfg(unix)]
 use std::borrow::Cow;
+use std::collections::VecDeque;
 #[cfg(not(windows))]
 use std::ffi::CString;
 use std::ffi::{OsStr, OsString};
@@ -1122,9 +1123,9 @@ impl TestScenario {
 
     /// Returns builder for invoking any system command. Paths given are treated
     /// relative to the environment's unique temporary test directory.
-    pub fn cmd<S: AsRef<OsStr>>(&self, bin: S) -> UCommand {
+    pub fn cmd<S: Into<PathBuf>>(&self, bin: S) -> UCommand {
         let mut command = UCommand::new();
-        command.bin_path = Some(PathBuf::from(bin.as_ref()));
+        command.bin_path = Some(bin.into());
         command.tmpd = Some(self.tmpd.clone());
         command
     }
@@ -1147,22 +1148,34 @@ impl TestScenario {
     /// relative to the environment's unique temporary test directory.
     /// Differs from the builder returned by `cmd` in that `cmd_keepenv` does not call
     /// `Command::env_clear` (Clears the entire environment map for the child process.)
-    pub fn cmd_keepenv<S: AsRef<OsStr>>(&self, bin: S) -> UCommand {
+    pub fn cmd_keepenv<S: Into<PathBuf>>(&self, bin: S) -> UCommand {
         let mut command = self.cmd(bin);
         command.keep_env();
         command
     }
 }
 
-/// A `UCommand` is a wrapper around an individual Command that provides several additional features
+/// A `UCommand` is a builder wrapping an individual Command that provides several additional features:
 /// 1. it has convenience functions that are more ergonomic to use for piping in stdin, spawning the command
 ///       and asserting on the results.
 /// 2. it tracks arguments provided so that in test cases which may provide variations of an arg in loops
 ///     the test failure can display the exact call which preceded an assertion failure.
-/// 3. it provides convenience construction arguments to set the Command working directory and/or clear its environment.
+/// 3. it provides convenience construction methods to set the Command uutils utility and temporary directory.
+///
+/// Per default `UCommand` runs a command given as an argument in a shell, platform independently.
+/// It does so with safety in mind, so the working directory is set to an individual temporary
+/// directory and the environment variables are cleared per default.
+///
+/// This default behavior can be changed with builder methods:
+/// * [`UCommand::temp_dir`]: Sets the temporary directory
+/// * [`UCommand::current_dir`]: Sets the working directory
+/// * [`UCommand::util`]: Sets the `util_name` and execution binary to the path where `coreutils`
+///   (`coreutils.exe` on windows) is found
+/// * [`UCommand::keep_env`]: Keep environment variables instead of clearing them
+/// * ...
 #[derive(Debug, Default)]
 pub struct UCommand {
-    args: Vec<OsString>,
+    args: VecDeque<OsString>,
     env_vars: Vec<(OsString, OsString)>,
     current_dir: Option<PathBuf>,
     env_clear: bool,
@@ -1182,36 +1195,57 @@ pub struct UCommand {
 }
 
 impl UCommand {
+    /// Create a new plain [`UCommand`].
+    ///
+    /// If not specified otherwise with [`UCommand::bin_path`] or [`UCommand::util`] the underlying
+    /// [`Command] executes a command that must be given as argument (for example with
+    /// [`UCommand::arg`] in a shell (`sh -c` on unix platforms or `cmd /C` on windows).
+    ///
+    /// Per default the environment is cleared and the working directory is set to an individual
+    /// temporary directory for safety purposes.
     pub fn new() -> Self {
         Self {
-            timeout: Some(Duration::from_secs(30)),
             env_clear: true,
             ..Default::default()
         }
     }
 
+    /// Create a [`UCommand`] for a specific uutils utility.
+    ///
+    /// Sets the temporary directory to `tmpd` and the execution binary to the path where
+    /// `coreutils` is found.
     pub fn with_util<T>(util_name: T, tmpd: Rc<TempDir>) -> Self
     where
         T: AsRef<OsStr>,
     {
         let mut ucmd = Self::new();
-        ucmd.util_name(util_name).temp_dir(tmpd);
+        ucmd.util(util_name).temp_dir(tmpd);
         ucmd
     }
 
+    /// Create a [`UCommand`] from a [`TestScenario`].
+    ///
+    /// The temporary directory and uutils utility are inherited from the [`TestScenario`] and the
+    /// execution binary is set to `coreutils`.
     pub fn from_test_scenario(scene: &TestScenario) -> Self {
         Self::with_util(&scene.util_name, scene.tmpd.clone())
     }
 
+    /// Set the execution binary.
+    ///
+    /// Make sure the binary found at this path is executable. It's safest to provide the
+    /// canonicalized path instead of just the name of the executable, since path expansion is not
+    /// guaranteed to work on all platforms.
     pub fn bin_path<T>(&mut self, bin_path: T) -> &mut Self
     where
-        T: AsRef<OsStr>,
+        T: Into<PathBuf>,
     {
-        self.bin_path = Some(bin_path.as_ref().into());
+        self.bin_path = Some(bin_path.into());
         self
     }
 
-    pub fn util_name<T>(&mut self, util_name: T) -> &mut Self
+    /// Set the `util_name` and test execution binary to `coreutils`
+    pub fn util<T>(&mut self, util_name: T) -> &mut Self
     where
         T: AsRef<OsStr>,
     {
@@ -1220,21 +1254,30 @@ impl UCommand {
         self
     }
 
+    /// Set the temporary directory.
+    ///
+    /// Per default an individual temporary directory is created for every [`UCommand`]. If not
+    /// specified otherwise with [`UCommand::current_dir`] the working directory is set to this
+    /// temporary directory.
     pub fn temp_dir(&mut self, temp_dir: Rc<TempDir>) -> &mut Self {
         self.tmpd = Some(temp_dir);
         self
     }
 
+    /// Keep the environment variables instead of clearing them before running the command.
     pub fn keep_env(&mut self) -> &mut Self {
         self.env_clear = false;
         self
     }
 
+    /// Set the working directory for this [`UCommand`]
+    ///
+    /// Per default the working directory is set to the [`UCommands`] temporary directory.
     pub fn current_dir<T>(&mut self, current_dir: T) -> &mut Self
     where
-        T: AsRef<Path>,
+        T: Into<PathBuf>,
     {
-        self.current_dir = Some(current_dir.as_ref().into());
+        self.current_dir = Some(current_dir.into());
         self
     }
 
@@ -1261,7 +1304,7 @@ impl UCommand {
     /// Add a parameter to the invocation. Path arguments are treated relative
     /// to the test environment directory.
     pub fn arg<S: AsRef<OsStr>>(&mut self, arg: S) -> &mut Self {
-        self.args.push(arg.as_ref().into());
+        self.args.push_back(arg.as_ref().into());
         self
     }
 
@@ -1308,6 +1351,7 @@ impl UCommand {
         self
     }
 
+    // TODO: rename this to just `limits` to avoid the impression to create a new [`UCommand`].
     #[cfg(any(target_os = "linux"))]
     pub fn with_limit(
         &mut self,
@@ -1334,21 +1378,23 @@ impl UCommand {
     fn build(&mut self) -> (Command, Option<CapturedOutput>, Option<CapturedOutput>) {
         if self.bin_path.is_some() {
             if let Some(util_name) = &self.util_name {
-                self.args.insert(0, OsString::from(util_name));
+                self.args.push_front(OsString::from(util_name));
             }
         } else if let Some(util_name) = &self.util_name {
             self.bin_path = Some(PathBuf::from(TESTS_BINARY));
-            self.args.insert(0, OsString::from(util_name));
+            self.args.push_front(OsString::from(util_name));
+        // neither `bin_path` nor `util_name` was set so we apply the default to run the arguments
+        // in a shell platform specific
         } else if cfg!(unix) {
-            let bin_path = if cfg!(target_os = "android") {
-                PathBuf::from("/system/bin/sh")
-            } else {
-                PathBuf::from("/bin/sh")
-            };
+            #[cfg(target_os = "android")]
+            let bin_path = PathBuf::from("/system/bin/sh");
+            #[cfg(not(target_os = "android"))]
+            let bin_path = PathBuf::from("/bin/sh");
+
             self.bin_path = Some(bin_path);
             let c_arg = OsString::from("-c");
             if !self.args.contains(&c_arg) {
-                self.args.insert(0, c_arg);
+                self.args.push_front(c_arg);
             }
         } else {
             self.bin_path = Some(PathBuf::from("cmd"));
@@ -1359,21 +1405,26 @@ impl UCommand {
                 .iter()
                 .any(|s| s.eq_ignore_ascii_case(&c_arg) || s.eq_ignore_ascii_case(&k_arg))
             {
-                self.args.insert(0, c_arg);
+                self.args.push_front(c_arg);
             }
         };
 
+        // unwrap is safe here because we have set `self.bin_path` before
         let mut command = Command::new(self.bin_path.as_ref().unwrap());
         command.args(&self.args);
 
-        if self.tmpd.is_none() {
-            self.tmpd = Some(Rc::new(tempfile::tempdir().unwrap()));
-        }
-
+        // We use a temporary directory as working directory if not specified otherwise with
+        // `current_dir()`. If neither `current_dir` nor a temporary directory is available, then we
+        // create our own.
         if let Some(current_dir) = &self.current_dir {
             command.current_dir(current_dir);
+        } else if let Some(temp_dir) = &self.tmpd {
+            command.current_dir(temp_dir.path());
         } else {
-            command.current_dir(self.tmpd.as_ref().unwrap().path());
+            let temp_dir = tempfile::tempdir().unwrap();
+            self.current_dir = Some(temp_dir.path().into());
+            command.current_dir(temp_dir.path());
+            self.tmpd = Some(Rc::new(temp_dir));
         }
 
         if self.env_clear {
@@ -1395,8 +1446,10 @@ impl UCommand {
             }
         }
 
-        for (key, value) in &self.env_vars {
-            command.env(key, value);
+        command.envs(self.env_vars.iter().cloned());
+
+        if self.timeout.is_none() {
+            self.timeout = Some(Duration::from_secs(30));
         }
 
         let mut captured_stdout = None;
@@ -3284,7 +3337,7 @@ mod tests {
                 OsString::from("-n"),
                 OsString::from("hello")
             ],
-            command.args.as_slice()
+            command.args.make_contiguous()
         );
         assert!(command.tmpd.is_some());
     }
