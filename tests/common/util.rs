@@ -1222,29 +1222,6 @@ impl UCommand {
         ucmd
     }
 
-    /// Run a command in a `sh` (unix) or `cmd` (windows) shell.
-    ///
-    /// The arguments, set with [`UCommand:arg`] or [`UCommand:args`] are interpreted as arguments
-    /// for the shell. The last argument should be a positional argument with the command to run in
-    /// the shell.
-    ///
-    /// This option replaces `self.bin_path` with `sh` (or `cmd`) and sets `self.util_name` to
-    /// `None`.
-    pub fn use_shell(&mut self) -> &mut Self {
-        self.util_name = None;
-
-        #[cfg(unix)]
-        let (bin_path, arg) = (OsString::from("sh"), OsString::from("-c"));
-        #[cfg(windows)]
-        let (bin_path, arg) = (OsString::from("cmd"), OsString::from("/C"));
-
-        self.bin_path = Some(PathBuf::from(bin_path));
-        if !self.args.contains(&arg) {
-            self.args.insert(0, arg);
-        }
-        self
-    }
-
     pub fn current_dir<T>(&mut self, current_dir: T) -> &mut Self
     where
         T: AsRef<Path>,
@@ -3280,7 +3257,7 @@ mod tests {
 
     #[cfg(feature = "echo")]
     #[test]
-    fn test_ucommand_when_use_shell() {
+    fn test_ucommand_when_default() {
         let shell_cmd = format!("{} echo -n hello", TESTS_BINARY);
 
         let mut command = UCommand::new();
