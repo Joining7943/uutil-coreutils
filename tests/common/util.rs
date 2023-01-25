@@ -1168,9 +1168,9 @@ impl TestScenario {
 pub struct UCommand {
     args: Vec<OsString>,
     env_vars: Vec<(OsString, OsString)>,
-    current_dir: OsString,
+    current_dir: Option<PathBuf>,
     env_clear: bool,
-    bin_path: OsString,
+    bin_path: Option<PathBuf>,
     util_name: Option<OsString>,
     has_run: bool,
     ignore_stdin_write_error: bool,
@@ -1186,21 +1186,16 @@ pub struct UCommand {
 }
 
 impl UCommand {
-    pub fn new<T: AsRef<OsStr>, S: AsRef<OsStr>, U: AsRef<OsStr>>(
-        bin_path: T,
-        util_name: Option<S>,
-        curdir: U,
-        env_clear: bool,
-    ) -> Self {
+    pub fn new() -> Self {
         Self {
             tmpd: None,
             has_run: false,
-            bin_path: bin_path.as_ref().into(),
-            current_dir: curdir.as_ref().into(),
+            bin_path: None,
+            current_dir: None,
             args: vec![],
-            env_clear,
+            env_clear: true,
             env_vars: vec![],
-            util_name: util_name.map(|s| s.as_ref().into()),
+            util_name: None,
             ignore_stdin_write_error: false,
             bytes_into_stdin: None,
             stdin: None,
@@ -1219,8 +1214,11 @@ impl UCommand {
         tmpd: Rc<TempDir>,
         env_clear: bool,
     ) -> Self {
-        let mut ucmd: Self = Self::new(bin_path, util_name, tmpd.path(), env_clear);
+        let mut ucmd: Self = Self::new();
+        ucmd.bin_path = Some(PathBuf::from(bin_path.as_ref()));
+        ucmd.util_name = util_name.map(|s| s.as_ref().to_os_string());
         ucmd.tmpd = Some(tmpd);
+        ucmd.env_clear = env_clear;
         ucmd
     }
 
@@ -1240,7 +1238,7 @@ impl UCommand {
         #[cfg(windows)]
         let (bin_path, arg) = (OsString::from("cmd"), OsString::from("/C"));
 
-        self.bin_path = bin_path;
+        self.bin_path = Some(PathBuf::from(bin_path));
         if !self.args.contains(&arg) {
             self.args.insert(0, arg);
         }
@@ -1249,9 +1247,9 @@ impl UCommand {
 
     pub fn current_dir<T>(&mut self, current_dir: T) -> &mut Self
     where
-        T: AsRef<OsStr>,
+        T: AsRef<Path>,
     {
-        self.current_dir = current_dir.as_ref().into();
+        self.current_dir = Some(current_dir.as_ref().into());
         self
     }
 
@@ -1349,13 +1347,49 @@ impl UCommand {
     }
 
     fn build(&mut self) -> (Command, Option<CapturedOutput>, Option<CapturedOutput>) {
-        let mut command = Command::new(&self.bin_path);
-        if let Some(util_name) = &self.util_name {
-            command.arg(util_name);
+        if self.bin_path.is_some() {
+            if let Some(util_name) = &self.util_name {
+                self.args.insert(0, OsString::from(util_name));
+            }
+        } else if let Some(util_name) = &self.util_name {
+            self.bin_path = Some(PathBuf::from(TESTS_BINARY));
+            self.args.insert(0, OsString::from(util_name));
+        } else if cfg!(unix) {
+            let bin_path = if cfg!(target_os = "android") {
+                PathBuf::from("/system/bin/sh")
+            } else {
+                PathBuf::from("/bin/sh")
+            };
+            self.bin_path = Some(bin_path);
+            let c_arg = OsString::from("-c");
+            if !self.args.contains(&c_arg) {
+                self.args.insert(0, c_arg);
+            }
+        } else {
+            self.bin_path = Some(PathBuf::from("cmd"));
+            let c_arg = OsString::from("/C");
+            let k_arg = OsString::from("/K");
+            if !self
+                .args
+                .iter()
+                .any(|s| s.eq_ignore_ascii_case(&c_arg) || s.eq_ignore_ascii_case(&k_arg))
+            {
+                self.args.insert(0, c_arg);
+            }
+        };
+
+        let mut command = Command::new(self.bin_path.as_ref().unwrap());
+        command.args(&self.args);
+
+        if self.tmpd.is_none() {
+            self.tmpd = Some(Rc::new(tempfile::tempdir().unwrap()));
         }
 
-        command.args(&self.args);
-        command.current_dir(&self.current_dir);
+        if let Some(current_dir) = &self.current_dir {
+            command.current_dir(current_dir);
+        } else {
+            command.current_dir(self.tmpd.as_ref().unwrap().path());
+        }
 
         if self.env_clear {
             command.env_clear();
@@ -1424,9 +1458,9 @@ impl UCommand {
         assert!(!self.has_run, "{}", ALREADY_RUN);
         self.has_run = true;
 
+        let (mut command, captured_stdout, captured_stderr) = self.build();
         log_info("run", self.to_string());
 
-        let (mut command, captured_stdout, captured_stderr) = self.build();
         let child = command.spawn().unwrap();
 
         #[cfg(target_os = "linux")]
@@ -1490,7 +1524,10 @@ impl UCommand {
 
 impl std::fmt::Display for UCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut comm_string: Vec<String> = vec![self.bin_path.to_string_lossy().to_string()];
+        let mut comm_string: Vec<String> = vec![self
+            .bin_path
+            .as_ref()
+            .map_or("".to_string(), |p| p.display().to_string())];
         comm_string.extend(self.args.iter().map(|s| s.to_string_lossy().to_string()));
         f.write_str(&comm_string.join(" "))
     }
@@ -1735,7 +1772,7 @@ impl UChild {
     ) -> Self {
         Self {
             raw: child,
-            bin_path: ucommand.bin_path.to_string_lossy().to_string(),
+            bin_path: ucommand.bin_path.as_ref().unwrap().display().to_string(),
             util_name: ucommand
                 .util_name
                 .clone()
@@ -3244,22 +3281,21 @@ mod tests {
     #[cfg(feature = "echo")]
     #[test]
     fn test_ucommand_when_use_shell() {
-        let tmpdir = tempfile::tempdir().unwrap();
         let shell_cmd = format!("{} echo -n hello", TESTS_BINARY);
 
-        let mut command = UCommand::new(TESTS_BINARY, Some("echo"), tmpdir.path(), true);
-        command.arg(&shell_cmd).use_shell();
+        let mut command = UCommand::new();
+        command.arg(&shell_cmd).succeeds().stdout_is("hello");
 
-        #[cfg(unix)]
-        let (expected_bin, expected_arg) = (OsString::from("sh"), OsString::from("-c"));
+        #[cfg(target_os = "android")]
+        let (expected_bin, expected_arg) = (PathBuf::from("/system/bin/sh"), OsString::from("-c"));
+        #[cfg(all(unix, not(target_os = "android")))]
+        let (expected_bin, expected_arg) = (PathBuf::from("/bin/sh"), OsString::from("-c"));
         #[cfg(windows)]
-        let (expected_bin, expected_arg) = (OsString::from("cmd"), OsString::from("/C"));
+        let (expected_bin, expected_arg) = (PathBuf::from("cmd"), OsString::from("/C"));
 
-        std::assert_eq!(expected_bin, command.bin_path);
+        std::assert_eq!(&expected_bin, command.bin_path.as_ref().unwrap());
         assert!(command.util_name.is_none());
         std::assert_eq!(command.args, &[expected_arg, OsString::from(&shell_cmd)]);
-        assert!(command.tmpd.is_none());
-
-        command.succeeds().stdout_is("hello");
+        assert!(command.tmpd.is_some());
     }
 }
