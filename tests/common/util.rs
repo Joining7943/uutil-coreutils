@@ -1117,36 +1117,30 @@ impl TestScenario {
     /// Returns builder for invoking the target uutils binary. Paths given are
     /// treated relative to the environment's unique temporary test directory.
     pub fn ucmd(&self) -> UCommand {
-        self.composite_cmd(&self.bin_path, &self.util_name, true)
-    }
-
-    /// Returns builder for invoking the target uutils binary. Paths given are
-    /// treated relative to the environment's unique temporary test directory.
-    pub fn composite_cmd<S: AsRef<OsStr>, T: AsRef<OsStr>>(
-        &self,
-        bin: S,
-        util_name: T,
-        env_clear: bool,
-    ) -> UCommand {
-        UCommand::new_from_tmp(bin, Some(util_name), self.tmpd.clone(), env_clear)
+        UCommand::from_test_scenario(self)
     }
 
     /// Returns builder for invoking any system command. Paths given are treated
     /// relative to the environment's unique temporary test directory.
     pub fn cmd<S: AsRef<OsStr>>(&self, bin: S) -> UCommand {
-        UCommand::new_from_tmp::<S, S>(bin, None, self.tmpd.clone(), true)
+        let mut command = UCommand::new();
+        command.bin_path = Some(PathBuf::from(bin.as_ref()));
+        command.tmpd = Some(self.tmpd.clone());
+        command
     }
 
     /// Returns builder for invoking any uutils command. Paths given are treated
     /// relative to the environment's unique temporary test directory.
     pub fn ccmd<S: AsRef<OsStr>>(&self, bin: S) -> UCommand {
-        self.composite_cmd(&self.bin_path, bin, true)
+        UCommand::with_util(bin, self.tmpd.clone())
     }
 
     // different names are used rather than an argument
     // because the need to keep the environment is exceedingly rare.
     pub fn ucmd_keepenv(&self) -> UCommand {
-        self.composite_cmd(&self.bin_path, &self.util_name, false)
+        let mut command = self.ucmd();
+        command.keep_env();
+        command
     }
 
     /// Returns builder for invoking any system command. Paths given are treated
@@ -1154,7 +1148,9 @@ impl TestScenario {
     /// Differs from the builder returned by `cmd` in that `cmd_keepenv` does not call
     /// `Command::env_clear` (Clears the entire environment map for the child process.)
     pub fn cmd_keepenv<S: AsRef<OsStr>>(&self, bin: S) -> UCommand {
-        UCommand::new_from_tmp::<S, S>(bin, None, self.tmpd.clone(), false)
+        let mut command = self.cmd(bin);
+        command.keep_env();
+        command
     }
 }
 
@@ -1164,7 +1160,7 @@ impl TestScenario {
 /// 2. it tracks arguments provided so that in test cases which may provide variations of an arg in loops
 ///     the test failure can display the exact call which preceded an assertion failure.
 /// 3. it provides convenience construction arguments to set the Command working directory and/or clear its environment.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct UCommand {
     args: Vec<OsString>,
     env_vars: Vec<(OsString, OsString)>,
@@ -1188,38 +1184,50 @@ pub struct UCommand {
 impl UCommand {
     pub fn new() -> Self {
         Self {
-            tmpd: None,
-            has_run: false,
-            bin_path: None,
-            current_dir: None,
-            args: vec![],
-            env_clear: true,
-            env_vars: vec![],
-            util_name: None,
-            ignore_stdin_write_error: false,
-            bytes_into_stdin: None,
-            stdin: None,
-            stdout: None,
-            stderr: None,
-            #[cfg(any(target_os = "linux"))]
-            limits: vec![],
-            stderr_to_stdout: false,
             timeout: Some(Duration::from_secs(30)),
+            env_clear: true,
+            ..Default::default()
         }
     }
 
-    pub fn new_from_tmp<T: AsRef<OsStr>, S: AsRef<OsStr>>(
-        bin_path: T,
-        util_name: Option<S>,
-        tmpd: Rc<TempDir>,
-        env_clear: bool,
-    ) -> Self {
-        let mut ucmd: Self = Self::new();
-        ucmd.bin_path = Some(PathBuf::from(bin_path.as_ref()));
-        ucmd.util_name = util_name.map(|s| s.as_ref().to_os_string());
-        ucmd.tmpd = Some(tmpd);
-        ucmd.env_clear = env_clear;
+    pub fn with_util<T>(util_name: T, tmpd: Rc<TempDir>) -> Self
+    where
+        T: AsRef<OsStr>,
+    {
+        let mut ucmd = Self::new();
+        ucmd.util_name(util_name).temp_dir(tmpd);
         ucmd
+    }
+
+    pub fn from_test_scenario(scene: &TestScenario) -> Self {
+        Self::with_util(&scene.util_name, scene.tmpd.clone())
+    }
+
+    pub fn bin_path<T>(&mut self, bin_path: T) -> &mut Self
+    where
+        T: AsRef<OsStr>,
+    {
+        self.bin_path = Some(bin_path.as_ref().into());
+        self
+    }
+
+    pub fn util_name<T>(&mut self, util_name: T) -> &mut Self
+    where
+        T: AsRef<OsStr>,
+    {
+        self.bin_path(TESTS_BINARY);
+        self.util_name = Some(util_name.as_ref().to_os_string());
+        self
+    }
+
+    pub fn temp_dir(&mut self, temp_dir: Rc<TempDir>) -> &mut Self {
+        self.tmpd = Some(temp_dir);
+        self
+    }
+
+    pub fn keep_env(&mut self) -> &mut Self {
+        self.env_clear = false;
+        self
     }
 
     pub fn current_dir<T>(&mut self, current_dir: T) -> &mut Self
@@ -2487,30 +2495,8 @@ mod tests {
     // spell-checker:ignore (tests) asdfsadfa
     use super::*;
 
-    #[cfg(unix)]
     pub fn run_cmd<T: AsRef<OsStr>>(cmd: T) -> CmdResult {
-        let mut ucmd = UCommand::new_from_tmp::<&str, String>(
-            "sh",
-            None,
-            Rc::new(tempfile::tempdir().unwrap()),
-            true,
-        );
-        ucmd.arg("-c");
-        ucmd.arg(cmd);
-        ucmd.run()
-    }
-
-    #[cfg(windows)]
-    pub fn run_cmd<T: AsRef<OsStr>>(cmd: T) -> CmdResult {
-        let mut ucmd = UCommand::new_from_tmp::<&str, String>(
-            "cmd",
-            None,
-            Rc::new(tempfile::tempdir().unwrap()),
-            true,
-        );
-        ucmd.arg("/C");
-        ucmd.arg(cmd);
-        ucmd.run()
+        UCommand::new().arg(cmd).run()
     }
 
     #[test]
@@ -3273,6 +3259,33 @@ mod tests {
         std::assert_eq!(&expected_bin, command.bin_path.as_ref().unwrap());
         assert!(command.util_name.is_none());
         std::assert_eq!(command.args, &[expected_arg, OsString::from(&shell_cmd)]);
+        assert!(command.tmpd.is_some());
+    }
+
+    #[cfg(feature = "echo")]
+    #[test]
+    fn test_ucommand_with_util() {
+        let tmpd = tempfile::tempdir().unwrap();
+        let mut command = UCommand::with_util("echo", Rc::new(tmpd));
+
+        command
+            .args(&["-n", "hello"])
+            .succeeds()
+            .stdout_only("hello");
+
+        std::assert_eq!(
+            &PathBuf::from(TESTS_BINARY),
+            command.bin_path.as_ref().unwrap()
+        );
+        std::assert_eq!(&OsString::from("echo"), command.util_name.as_ref().unwrap());
+        std::assert_eq!(
+            &[
+                OsString::from("echo"),
+                OsString::from("-n"),
+                OsString::from("hello")
+            ],
+            command.args.as_slice()
+        );
         assert!(command.tmpd.is_some());
     }
 }
