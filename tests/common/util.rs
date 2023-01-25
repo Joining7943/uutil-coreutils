@@ -1128,17 +1128,17 @@ impl TestScenario {
 
     /// Returns builder for invoking any system command. Paths given are treated
     /// relative to the environment's unique temporary test directory.
-    pub fn cmd<S: Into<PathBuf>>(&self, bin: S) -> UCommand {
+    pub fn cmd<S: Into<PathBuf>>(&self, bin_path: S) -> UCommand {
         let mut command = UCommand::new();
-        command.bin_path(bin);
+        command.bin_path(bin_path);
         command.temp_dir(self.tmpd.clone());
         command
     }
 
     /// Returns builder for invoking any uutils command. Paths given are treated
     /// relative to the environment's unique temporary test directory.
-    pub fn ccmd<S: AsRef<str>>(&self, bin: S) -> UCommand {
-        UCommand::with_util(bin, self.tmpd.clone())
+    pub fn ccmd<S: AsRef<str>>(&self, util_name: S) -> UCommand {
+        UCommand::with_util(util_name, self.tmpd.clone())
     }
 
     // different names are used rather than an argument
@@ -1153,8 +1153,8 @@ impl TestScenario {
     /// relative to the environment's unique temporary test directory.
     /// Differs from the builder returned by `cmd` in that `cmd_keepenv` does not call
     /// `Command::env_clear` (Clears the entire environment map for the child process.)
-    pub fn cmd_keepenv<S: Into<PathBuf>>(&self, bin: S) -> UCommand {
-        let mut command = self.cmd(bin);
+    pub fn cmd_keepenv<S: Into<PathBuf>>(&self, bin_path: S) -> UCommand {
+        let mut command = self.cmd(bin_path);
         command.keep_env();
         command
     }
