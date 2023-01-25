@@ -66,7 +66,7 @@ fn read_scenario_fixture<S: AsRef<OsStr>>(tmpd: &Option<Rc<TempDir>>, file_rel_p
 #[derive(Debug, Clone)]
 pub struct CmdResult {
     /// bin_path provided by `TestScenario` or `UCommand`
-    bin_path: String,
+    bin_path: PathBuf,
     /// util_name provided by `TestScenario` or `UCommand`
     util_name: Option<String>,
     //tmpd is used for convenience functions for asserts against fixtures
@@ -80,21 +80,23 @@ pub struct CmdResult {
 }
 
 impl CmdResult {
-    pub fn new<T, U>(
-        bin_path: String,
-        util_name: Option<String>,
+    pub fn new<S, T, U, V>(
+        bin_path: S,
+        util_name: Option<T>,
         tmpd: Option<Rc<TempDir>>,
         exit_status: Option<ExitStatus>,
-        stdout: T,
-        stderr: U,
+        stdout: U,
+        stderr: V,
     ) -> Self
     where
-        T: Into<Vec<u8>>,
+        S: Into<PathBuf>,
+        T: AsRef<str>,
         U: Into<Vec<u8>>,
+        V: Into<Vec<u8>>,
     {
         Self {
-            bin_path,
-            util_name,
+            bin_path: bin_path.into(),
+            util_name: util_name.map(|s| s.as_ref().into()),
             tmpd,
             exit_status,
             stdout: stdout.into(),
@@ -636,7 +638,7 @@ impl CmdResult {
         self.stderr_only(format!(
             "{0}: {2}\nTry '{1} {0} --help' for more information.\n",
             self.util_name.as_ref().unwrap(), // This shouldn't be called using a normal command
-            self.bin_path,
+            self.bin_path.display(),
             msg.as_ref()
         ))
     }
@@ -1095,18 +1097,21 @@ pub struct TestScenario {
 }
 
 impl TestScenario {
-    pub fn new(util_name: &str) -> Self {
+    pub fn new<T>(util_name: T) -> Self
+    where
+        T: AsRef<str>,
+    {
         let tmpd = Rc::new(TempDir::new().unwrap());
         let ts = Self {
             bin_path: PathBuf::from(TESTS_BINARY),
-            util_name: String::from(util_name),
+            util_name: util_name.as_ref().into(),
             fixtures: AtPath::new(tmpd.as_ref().path()),
             tmpd,
         };
         let mut fixture_path_builder = env::current_dir().unwrap();
         fixture_path_builder.push(TESTS_DIR);
         fixture_path_builder.push(FIXTURES_DIR);
-        fixture_path_builder.push(util_name);
+        fixture_path_builder.push(util_name.as_ref());
         if let Ok(m) = fs::metadata(&fixture_path_builder) {
             if m.is_dir() {
                 recursive_copy(&fixture_path_builder, &ts.fixtures.subdir).unwrap();
@@ -1125,14 +1130,14 @@ impl TestScenario {
     /// relative to the environment's unique temporary test directory.
     pub fn cmd<S: Into<PathBuf>>(&self, bin: S) -> UCommand {
         let mut command = UCommand::new();
-        command.bin_path = Some(bin.into());
-        command.tmpd = Some(self.tmpd.clone());
+        command.bin_path(bin);
+        command.temp_dir(self.tmpd.clone());
         command
     }
 
     /// Returns builder for invoking any uutils command. Paths given are treated
     /// relative to the environment's unique temporary test directory.
-    pub fn ccmd<S: AsRef<OsStr>>(&self, bin: S) -> UCommand {
+    pub fn ccmd<S: AsRef<str>>(&self, bin: S) -> UCommand {
         UCommand::with_util(bin, self.tmpd.clone())
     }
 
@@ -1180,7 +1185,7 @@ pub struct UCommand {
     current_dir: Option<PathBuf>,
     env_clear: bool,
     bin_path: Option<PathBuf>,
-    util_name: Option<OsString>,
+    util_name: Option<String>,
     has_run: bool,
     ignore_stdin_write_error: bool,
     stdin: Option<Stdio>,
@@ -1216,7 +1221,7 @@ impl UCommand {
     /// `coreutils` is found.
     pub fn with_util<T>(util_name: T, tmpd: Rc<TempDir>) -> Self
     where
-        T: AsRef<OsStr>,
+        T: AsRef<str>,
     {
         let mut ucmd = Self::new();
         ucmd.util(util_name).temp_dir(tmpd);
@@ -1234,7 +1239,7 @@ impl UCommand {
     /// Set the execution binary.
     ///
     /// Make sure the binary found at this path is executable. It's safest to provide the
-    /// canonicalized path instead of just the name of the executable, since path expansion is not
+    /// canonicalized path instead of just the name of the executable, since path resolution is not
     /// guaranteed to work on all platforms.
     pub fn bin_path<T>(&mut self, bin_path: T) -> &mut Self
     where
@@ -1247,10 +1252,10 @@ impl UCommand {
     /// Set the `util_name` and test execution binary to `coreutils`
     pub fn util<T>(&mut self, util_name: T) -> &mut Self
     where
-        T: AsRef<OsStr>,
+        T: AsRef<str>,
     {
         self.bin_path(TESTS_BINARY);
-        self.util_name = Some(util_name.as_ref().to_os_string());
+        self.util_name = Some(util_name.as_ref().into());
         self
     }
 
@@ -1378,11 +1383,11 @@ impl UCommand {
     fn build(&mut self) -> (Command, Option<CapturedOutput>, Option<CapturedOutput>) {
         if self.bin_path.is_some() {
             if let Some(util_name) = &self.util_name {
-                self.args.push_front(OsString::from(util_name));
+                self.args.push_front(util_name.into());
             }
         } else if let Some(util_name) = &self.util_name {
             self.bin_path = Some(PathBuf::from(TESTS_BINARY));
-            self.args.push_front(OsString::from(util_name));
+            self.args.push_front(util_name.into());
         // neither `bin_path` nor `util_name` was set so we apply the default to run the arguments
         // in a shell platform specific
         } else if cfg!(unix) {
@@ -1703,14 +1708,14 @@ impl<'a> UChildAssertion<'a> {
                 self.uchild.stderr_exact_bytes(expected_stderr_size),
             ),
         };
-        CmdResult {
-            bin_path: self.uchild.bin_path.clone(),
-            util_name: self.uchild.util_name.clone(),
-            tmpd: self.uchild.tmpd.clone(),
+        CmdResult::new(
+            self.uchild.bin_path.clone(),
+            self.uchild.util_name.clone(),
+            self.uchild.tmpd.clone(),
             exit_status,
             stdout,
             stderr,
-        }
+        )
     }
 
     // Make assertions of [`CmdResult`] with all output from start of the process until now.
@@ -1790,7 +1795,7 @@ impl<'a> UChildAssertion<'a> {
 /// Abstraction for a [`std::process::Child`] to handle the child process.
 pub struct UChild {
     raw: Child,
-    bin_path: String,
+    bin_path: PathBuf,
     util_name: Option<String>,
     captured_stdout: Option<CapturedOutput>,
     captured_stderr: Option<CapturedOutput>,
@@ -1810,11 +1815,8 @@ impl UChild {
     ) -> Self {
         Self {
             raw: child,
-            bin_path: ucommand.bin_path.as_ref().unwrap().display().to_string(),
-            util_name: ucommand
-                .util_name
-                .clone()
-                .map(|s| s.to_string_lossy().to_string()),
+            bin_path: ucommand.bin_path.clone().unwrap(),
+            util_name: ucommand.util_name.clone(),
             captured_stdout,
             captured_stderr,
             ignore_stdin_write_error: ucommand.ignore_stdin_write_error,
@@ -2444,8 +2446,9 @@ fn parse_coreutil_version(version_string: &str) -> f32 {
 ///```
 #[cfg(unix)]
 pub fn expected_result(ts: &TestScenario, args: &[&str]) -> std::result::Result<CmdResult, String> {
-    println!("{}", check_coreutil_version(&ts.util_name, VERSION_MIN)?);
-    let util_name = &host_name_for(&ts.util_name);
+    let util_name = ts.util_name.as_str();
+    println!("{}", check_coreutil_version(util_name, VERSION_MIN)?);
+    let util_name = host_name_for(util_name);
 
     let result = ts
         .cmd_keepenv(util_name.as_ref())
@@ -3330,7 +3333,7 @@ mod tests {
             &PathBuf::from(TESTS_BINARY),
             command.bin_path.as_ref().unwrap()
         );
-        std::assert_eq!(&OsString::from("echo"), command.util_name.as_ref().unwrap());
+        std::assert_eq!("echo", &command.util_name.unwrap());
         std::assert_eq!(
             &[
                 OsString::from("echo"),
